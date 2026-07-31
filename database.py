@@ -11,16 +11,19 @@ import enum
 
 load_dotenv()
 
-# ─── تنظیمات دیتابیس ───
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "ima_db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# ─── اتصال به دیتابیس ───
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set!")
 
+# برای psycopg2
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgres://",
+        "postgresql://",
+        1
+    )
+    
 engine = create_engine(
     DATABASE_URL,
     echo=False,  # تغییر به True برای دیدن SQL queries
