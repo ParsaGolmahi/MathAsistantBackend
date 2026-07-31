@@ -1386,25 +1386,12 @@ Critical Rules:
         raise HTTPException(status_code=500, detail="خطا در تولید طرح درس")
 
 
-# ---------------------------------------------------------
-# Server Entry Point
-# ---------------------------------------------------------
 if __name__ == "__main__":
-    print("-" * 50)
-    print("IMA Backend v2.0.1 (Speed Optimized)")
-    print(f"Model: {AI_MODEL}")
-    print(f"TTS: {TTS_MODEL}")
-    print(f"Users: {len(fake_db['users'])}")
-    print(f"OS: {platform.system()}")
-    print("-" * 50)
-    
-    is_windows = platform.system() == "Windows"
-    
+    import os
+
     uvicorn.run(
         "app:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=True,
-        workers=1 if is_windows else 4,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8000)),
         log_level="info",
     )
