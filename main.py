@@ -36,6 +36,9 @@ load_dotenv()
 
 app = FastAPI(title="IMA Backend", version="2.0.1")
 
+from database import Base, engine
+
+Base.metadata.create_all(bind=engine)
 # --- CORS Configuration ---
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS if origin.strip()]
