@@ -77,6 +77,9 @@ async_client = AsyncOpenAI(
 AI_MODEL = "gapgpt-qwen-3.6"
 AI_MODEL_FAST = "gapgpt-qwen-3.6"
 TTS_MODEL = "tts-1"
+# Models for the avatar voice flow (use requested models)
+AVATAR_LLM = "gpt-4o-mini"
+AVATAR_TTS = "gpt-4o-mini-tts"
 
 
 # ---------------------------------------------------------
@@ -903,6 +906,52 @@ async def stt(file: UploadFile = File(...), current_user: User = Depends(get_cur
 
     except Exception as e:
         print(f"STT Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Avatar voice endpoint: runs LLM then TTS and returns base64 audio + text
+class AvatarRequest(BaseModel):
+    text: str
+    voice: Optional[str] = "alloy"
+    speed: Optional[float] = 1.0
+
+
+@app.post("/api/avatar/voice_query")
+async def avatar_voice_query(req: AvatarRequest, current_user: User = Depends(get_current_user)):
+    """دریافت متن، تولید پاسخ با `gpt-4o-mini` و بازگردانی صوت تولیدشده با `gpt-4o-mini-tts` به صورت Base64"""
+    try:
+        if not req.text or not req.text.strip():
+            raise HTTPException(status_code=400, detail="متن نمی‌تواند خالی باشد")
+
+        # 1) LLM reply using the requested avatar model
+        messages = [
+            {"role": "system", "content": "You are IMA (ایما), an expert Persian math teacher. Answer clearly and concisely in Persian (Farsi)."},
+            {"role": "user", "content": req.text}
+        ]
+
+        llm_resp = client.chat.completions.create(
+            model=AVATAR_LLM,
+            messages=messages,
+            temperature=0.5,
+            max_tokens=800
+        )
+        ai_text = llm_resp.choices[0].message.content
+
+        # 2) TTS using the avatar TTS model
+        tts_resp = client.audio.speech.create(
+            model=AVATAR_TTS,
+            input=ai_text,
+            voice=req.voice or "alloy",
+            speed=float(req.speed or 1.0),
+            response_format="mp3"
+        )
+
+        audio_b64 = base64.b64encode(tts_resp.content).decode('utf-8')
+
+        return {"text": ai_text, "audio": audio_b64}
+
+    except Exception as e:
+        print(f"Avatar voice error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
