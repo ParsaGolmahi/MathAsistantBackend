@@ -2,6 +2,7 @@ import os
 import re
 import json
 import uuid
+import traceback
 import base64
 import hashlib
 import secrets
@@ -885,28 +886,60 @@ async def stt(file: UploadFile = File(...), current_user: User = Depends(get_cur
             raise HTTPException(status_code=400, detail="فرمت فایل صوتی پشتیبانی نمی‌شود")
         
         audio_bytes = await file.read()
-        temp_path = f"temp_{uuid.uuid4()}.webm"
+        # choose extension based on content type
+        ext = (file.content_type or "audio/webm").split("/")[-1]
+        if ext == "mpeg": ext = "mp3"
+        if ext not in ["webm", "mp3", "wav", "ogg"]:
+            ext = "webm"
+
+        temp_path = f"temp_{uuid.uuid4()}.{ext}"
 
         try:
+            # write bytes to disk
             with open(temp_path, "wb") as f:
                 f.write(audio_bytes)
 
-            with open(temp_path, "rb") as f:
-                result = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=(temp_path, f, file.content_type or "audio/webm"),
-                    language="fa"
-                )
+            # read file and call transcription API (some SDKs expect a file-like object)
+            with open(temp_path, "rb") as fh:
+                try:
+                    result = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=fh,
+                        language="fa"
+                    )
+                except TypeError:
+                    # fallback if SDK expects tuple form
+                    fh.seek(0)
+                    result = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=(temp_path, fh, file.content_type or "audio/webm"),
+                        language="fa"
+                    )
 
-            return {"text": result.text}
-        
+            # attempt to extract text from result in several possible shapes
+            text = None
+            if hasattr(result, 'text'):
+                text = result.text
+            elif isinstance(result, dict):
+                text = result.get('text') or result.get('transcript')
+            else:
+                # try to access common attributes
+                text = getattr(result, 'data', None)
+
+            return {"text": text or ""}
+
         finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
 
     except Exception as e:
-        print(f"STT Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        tb = traceback.format_exc()
+        print(f"STT Error: {str(e)}\n{tb}")
+        # return safer message to client, but log full traceback server-side
+        raise HTTPException(status_code=500, detail="خطا در سرویس تشخیص گفتار")
 
 
 # Avatar voice endpoint: runs LLM then TTS and returns base64 audio + text
