@@ -864,7 +864,7 @@ async def handle_ai_platform_vision(
 # =========================================================================
 
 IMA_GEMMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
-IMA_GEMMA_MODEL = "gemma-4-E2B-it"
+IMA_GEMMA_MODEL = "lmstudio-community/gemma-4-E2B-it-GGUF:Q4_K_M"
 
 
 class IMAFreeChatRequest(BaseModel):
@@ -1001,14 +1001,14 @@ async def handle_ima_free_chat(
         conv.updated_at = datetime.utcnow()
 
         # مشخص می‌کنیم این گفتگو متعلق به ایماست
-        conv.model = "gemma-4-E2B-it"
+        conv.model = "lmstudio-community/gemma-4-E2B-it-GGUF:Q4_K_M"
 
         db.commit()
 
         return {
             "role": "assistant",
             "content": ai_reply,
-            "model": "gemma-4-E2B-it"
+            "model": "lmstudio-community/gemma-4-E2B-it-GGUF:Q4_K_M"
         }
 
     except requests.exceptions.RequestException as e:
