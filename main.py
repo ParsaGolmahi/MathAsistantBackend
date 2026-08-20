@@ -6,6 +6,7 @@ import traceback
 import base64
 import hashlib
 import secrets
+import requests
 import asyncio
 import threading
 import platform
@@ -680,6 +681,18 @@ class NewMessageRequest(BaseModel):
     content: str
     model: Optional[str] = AI_MODEL
 
+
+def get_recent_conversation_history(db: Session, conversation_id: int, limit: int = 20):
+    """فقط آخرین N پیام یک گفتگو را از PostgreSQL می‌خواند و آن‌ها را به ترتیب زمانی قدیمی به جدید برمی‌گرداند."""
+    rows = (
+        db.query(AIMessage)
+        .filter(AIMessage.conversation_id == conversation_id)
+        .order_by(AIMessage.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return list(reversed(rows))
+
 @app.get("/api/ai/conversations")
 async def get_user_conversations(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """دریافت تمام اتاق‌های گفتگوی ذخیره شده دانش‌آموز در دیتابیس"""
@@ -724,8 +737,8 @@ async def handle_ai_platform_chat(req: NewMessageRequest, current_user: User = D
     db.flush()
 
     # ۲. استخراج پیام‌های اخیر برای حفظ کانتکست کامل گفتگو
-    history_logs = db.query(AIMessage).filter(AIMessage.conversation_id == conv.id).order_by(AIMessage.created_at.asc()).limit(20).all()
-    
+    history_logs = get_recent_conversation_history(db, conv.id, 20)
+
     openai_messages = [{
         "role": "system",
         "content": "You are IMA (ایما), an expert and highly sophisticated math teacher. Help the student solve problems logically, step-by-step. Provide clean equations. Always respond in fluent Persian."
@@ -798,20 +811,30 @@ async def handle_ai_platform_vision(
     db.add(user_msg)
     db.flush()
 
+    # تاریخچه اخیر گفتگو را به مدل Vision برای حفظ کانتکست می‌دهیم
+    history_logs = get_recent_conversation_history(db, conv.id, 20)
+
     # تبدیل به Base64 برای OpenAI
     b64 = base64.b64encode(contents).decode('utf-8')
     mime = file.content_type or "image/jpeg"
-    
+
+    messages = [{
+        "role": "system",
+        "content": "You are IMA, an expert math teacher. Analyze the image, solve the problem clearly using LaTeX for math formulas, and respond in fluent Persian (Farsi)."
+    }]
+
+    for log in history_logs:
+        if log.role == "user":
+            messages.append({"role": "user", "content": log.content})
+        else:
+            messages.append({"role": "assistant", "content": log.content})
+
     # ساخت قالب پیام برای مدل Vision
     user_content = [
         {"type": "text", "text": question or "لطفاً این سوال ریاضی را به صورت گام به گام حل کن."[:500]},
         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
     ]
-
-    messages = [
-        {"role": "system", "content": "You are IMA, an expert math teacher. Analyze the image, solve the problem clearly using LaTeX for math formulas, and respond in fluent Persian (Farsi)."},
-        {"role": "user", "content": user_content}
-    ]
+    messages.append({"role": "user", "content": user_content})
 
     try:
         response = client.chat.completions.create(
@@ -836,6 +859,179 @@ async def handle_ai_platform_vision(
         db.rollback()
         raise HTTPException(status_code=500, detail="خطا در پردازش تصویر توسط هوش مصنوعی")
 
+# =========================================================================
+# 🤖 IMA FREE AI — Gemma 4 E2B
+# =========================================================================
+
+IMA_GEMMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
+IMA_GEMMA_MODEL = "gemma-4-E2B-it"
+
+
+class IMAFreeChatRequest(BaseModel):
+    conversation_id: int
+    content: str
+
+
+@app.post("/api/ai/ima-chat")
+async def handle_ima_free_chat(
+    req: IMAFreeChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    چت رایگان ایما با Gemma 4 E2B روی سرور اختصاصی.
+    """
+
+    # ---------------------------------------------------------
+    # 1. بررسی مالکیت گفتگو
+    # ---------------------------------------------------------
+    conv = db.query(AIConversation).filter(
+        AIConversation.id == req.conversation_id,
+        AIConversation.user_id == current_user.id
+    ).first()
+
+    if not conv:
+        raise HTTPException(
+            status_code=404,
+            detail="گفتگو پیدا نشد"
+        )
+
+    if not req.content.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="پیام نمی‌تواند خالی باشد"
+        )
+
+    # ---------------------------------------------------------
+    # 2. ذخیره پیام کاربر
+    # ---------------------------------------------------------
+    user_msg = AIMessage(
+        conversation_id=conv.id,
+        role="user",
+        content=req.content
+    )
+
+    db.add(user_msg)
+    db.flush()
+
+    # ---------------------------------------------------------
+    # 3. گرفتن تاریخچه گفتگو (آخرین 20 پیام به ترتیب زمانی)
+    # ---------------------------------------------------------
+    history_logs = get_recent_conversation_history(db, conv.id, 20)
+
+    messages = [
+        {
+            "role": "system",
+            "content": """
+تو «ایما» هستی؛ دستیار هوشمند آموزشی پلتفرم IMA.
+
+قوانین تو:
+
+- همیشه به زبان فارسی روان پاسخ بده.
+- پاسخ‌ها را برای دانش‌آموزان، مخصوصاً پایه نهم، قابل فهم ارائه کن.
+- در مسائل ریاضی مراحل حل را به صورت منطقی و مرحله‌به‌مرحله توضیح بده.
+- فقط جواب نهایی را نده، مگر اینکه کاربر صراحتاً فقط جواب را بخواهد.
+- فرمول‌ها را در صورت نیاز با LaTeX بنویس.
+- اگر سؤال اشتباه یا ناقص است، محترمانه به کاربر بگو.
+- از توضیحات بیش از حد طولانی خودداری کن.
+- لحن دوستانه، آموزشی و دقیق داشته باش.
+- خودت را ChatGPT معرفی نکن.
+- اگر درباره هویتت پرسیده شد، بگو «من ایما، دستیار هوشمند آموزشی IMA هستم.»
+"""
+        }
+    ]
+
+    for log in history_logs:
+        messages.append({
+            "role": log.role,
+            "content": log.content
+        })
+
+    # ---------------------------------------------------------
+    # 4. درخواست به Gemma (همیشه از مدل ثابت محیطی استفاده می‌شود)
+    # ---------------------------------------------------------
+    payload = {
+        "model": IMA_GEMMA_MODEL,
+        "messages": messages,
+        "temperature": 0.4,
+        "max_tokens": 800,
+        "reasoning": False
+    }
+
+    try:
+        response = requests.post(
+            IMA_GEMMA_URL,
+            json=payload,
+            timeout=120
+        )
+
+        response.raise_for_status()
+
+        result = response.json()
+        choices = result.get("choices") or []
+        if not choices or not isinstance(choices, list):
+            raise ValueError("Gemma response is missing choices")
+
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+
+        if isinstance(content, list):
+            ai_reply = "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict)
+            ).strip()
+        else:
+            ai_reply = (content or "").strip()
+
+        if not ai_reply:
+            raise ValueError("Gemma returned empty response")
+
+        # -----------------------------------------------------
+        # 5. ذخیره پاسخ
+        # -----------------------------------------------------
+        ai_msg = AIMessage(
+            conversation_id=conv.id,
+            role="assistant",
+            content=ai_reply
+        )
+
+        db.add(ai_msg)
+
+        conv.updated_at = datetime.utcnow()
+
+        # مشخص می‌کنیم این گفتگو متعلق به ایماست
+        conv.model = "gemma-4-E2B-it"
+
+        db.commit()
+
+        return {
+            "role": "assistant",
+            "content": ai_reply,
+            "model": "gemma-4-E2B-it"
+        }
+
+    except requests.exceptions.RequestException as e:
+        db.rollback()
+
+        print(f"IMA Gemma connection error: {e}")
+
+        raise HTTPException(
+            status_code=503,
+            detail="سرویس ایما در حال حاضر در دسترس نیست"
+        )
+
+    except Exception as e:
+        db.rollback()
+
+        print(f"IMA Gemma Error: {e}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="خطا در پردازش پاسخ ایما"
+        )
+
+    
 # ---------------------------------------------------------
 # Audio Routes (TTS / STT)
 # ---------------------------------------------------------
